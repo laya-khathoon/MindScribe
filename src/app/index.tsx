@@ -1,44 +1,59 @@
-﻿import { useCallback, useState } from 'react';
-import {
-  SafeAreaView,
-  View,
-  Text,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  StatusBar,
-  ActivityIndicator,
-  Alert,
-} from 'react-native';
-import { useFocusEffect, useRouter } from 'expo-router';
-import {
+ import {
   setAudioModeAsync,
   useAudioPlayer,
   useAudioPlayerStatus,
 } from 'expo-audio';
 import * as FileSystem from 'expo-file-system/legacy';
+import { useFocusEffect, useRouter } from 'expo-router';
+import { useCallback, useMemo, useState } from 'react';
 import {
-  getVoiceNotes,
+  ActivityIndicator,
+  Alert,
+  Pressable,
+  ScrollView,
+  StatusBar,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import {
   deleteVoiceNote,
+  getVoiceNotes,
   type VoiceNote,
 } from '../db/database';
 
+type NoteFilter = 'all' | 'recent' | 'older';
+
+const RECENT_DAYS = 7;
+const DAY_IN_MILLISECONDS = 24 * 60 * 60 * 1000;
+
 export default function HomeScreen() {
   const router = useRouter();
+
   const [notes, setNotes] = useState<VoiceNote[]>([]);
   const [loading, setLoading] = useState(true);
   const [deletingId, setDeletingId] = useState<number | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [noteFilter, setNoteFilter] = useState<NoteFilter>('all');
+  const [playingUri, setPlayingUri] = useState<string | null>(null);
+  const [currentTime, setCurrentTime] = useState(0);
+
   const player = useAudioPlayer(null);
   const playerStatus = useAudioPlayerStatus(player);
-  const [playingUri, setPlayingUri] = useState<string | null>(null);
 
   const loadNotes = useCallback(async () => {
     try {
       const savedNotes = await getVoiceNotes();
       setNotes(savedNotes);
+      setCurrentTime(Date.now());
     } catch (error) {
       console.error('Failed to load voice notes:', error);
-      Alert.alert('Could not load notes', 'Please try reopening the Home screen.');
+      Alert.alert(
+        'Could not load notes',
+        'Please try reopening the Home screen.',
+      );
     } finally {
       setLoading(false);
     }
@@ -47,9 +62,44 @@ export default function HomeScreen() {
   useFocusEffect(
     useCallback(() => {
       setLoading(true);
-      loadNotes();
-    }, [loadNotes])
+      void loadNotes();
+    }, [loadNotes]),
   );
+
+  const filteredNotes = useMemo(() => {
+    const normalizedQuery = searchQuery.trim().toLowerCase();
+    const now = currentTime;
+    const recentCutoff = now - RECENT_DAYS * DAY_IN_MILLISECONDS;
+
+    return notes.filter((note) => {
+      const matchesSearch = note.title
+        .toLowerCase()
+        .includes(normalizedQuery);
+
+      if (!matchesSearch) {
+        return false;
+      }
+
+      const createdAt = new Date(note.createdAt).getTime();
+
+      if (noteFilter === 'recent') {
+        return (
+          !Number.isNaN(createdAt) &&
+          createdAt >= recentCutoff &&
+          createdAt <= now
+        );
+      }
+
+      if (noteFilter === 'older') {
+        return (
+          !Number.isNaN(createdAt) &&
+          createdAt < recentCutoff
+        );
+      }
+
+      return true;
+    });
+  }, [notes, searchQuery, noteFilter, currentTime]);
 
   const playNote = async (note: VoiceNote) => {
     try {
@@ -67,7 +117,11 @@ export default function HomeScreen() {
       player.replace(note.audioUri);
       player.play();
     } catch (error) {
-      Alert.alert('Playback error', String(error));
+      console.error('Playback failed:', error);
+      Alert.alert(
+        'Playback error',
+        'Could not play this recording. Please try again.',
+      );
     }
   };
 
@@ -84,7 +138,7 @@ export default function HomeScreen() {
             void removeNote(note);
           },
         },
-      ]
+      ],
     );
   };
 
@@ -98,22 +152,29 @@ export default function HomeScreen() {
       }
 
       try {
-        await FileSystem.deleteAsync(note.audioUri, { idempotent: true });
+        await FileSystem.deleteAsync(note.audioUri, {
+          idempotent: true,
+        });
       } catch (error) {
         console.error('Could not delete audio file:', error);
         Alert.alert(
           'Could not delete audio',
-          'The audio file could not be removed. The note has been kept.'
+          'The audio file could not be removed. The note has been kept.',
         );
         return;
       }
 
       await deleteVoiceNote(note.id);
+
       setNotes((currentNotes) =>
-        currentNotes.filter((item) => item.id !== note.id)
+        currentNotes.filter((item) => item.id !== note.id),
       );
     } catch (error) {
-      Alert.alert('Delete failed', String(error));
+      console.error('Delete failed:', error);
+      Alert.alert(
+        'Delete failed',
+        'Could not delete this note. Please try again.',
+      );
       await loadNotes();
     } finally {
       setDeletingId(null);
@@ -122,7 +183,9 @@ export default function HomeScreen() {
 
   const formatDate = (value: string) => {
     const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+    return Number.isNaN(date.getTime())
+      ? value
+      : date.toLocaleString();
   };
 
   const formatDuration = (milliseconds: number) => {
@@ -130,16 +193,28 @@ export default function HomeScreen() {
     const minutes = Math.floor(totalSeconds / 60);
     const seconds = totalSeconds % 60;
 
-    return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+    return `${String(minutes).padStart(2, '0')}:${String(
+      seconds,
+    ).padStart(2, '0')}`;
   };
+
+  const filterOptions: { label: string; value: NoteFilter }[] = [
+    { label: 'All', value: 'all' },
+    { label: 'Recent', value: 'recent' },
+    { label: 'Older', value: 'older' },
+  ];
 
   return (
     <SafeAreaView style={styles.container}>
-      <StatusBar barStyle="dark-content" backgroundColor="#F8F7F2" />
+      <StatusBar
+        barStyle="dark-content"
+        backgroundColor="#F5F9F0"
+      />
 
       <ScrollView
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
       >
         <View style={styles.header}>
           <View>
@@ -150,8 +225,13 @@ export default function HomeScreen() {
           </View>
 
           <Pressable
-            style={styles.settingsButton}
+            style={({ pressed }) => [
+              styles.settingsButton,
+              pressed && styles.pressed,
+            ]}
             onPress={() => router.push('/settings')}
+            accessibilityRole="button"
+            accessibilityLabel="Open settings"
           >
             <Text style={styles.settingsIcon}>Settings</Text>
           </Pressable>
@@ -159,9 +239,14 @@ export default function HomeScreen() {
 
         <View style={styles.hero}>
           <Text style={styles.eyebrow}>YOUR SPACE TO THINK</Text>
-          <Text style={styles.heroTitle}>Thoughts are{'\n'}worth keeping.</Text>
+
+          <Text style={styles.heroTitle}>
+            Thoughts are{'\n'}worth keeping.
+          </Text>
+
           <Text style={styles.heroDescription}>
-            Speak freely. MindScribe will help you organize your ideas later.
+            Speak freely. MindScribe will help you organize your ideas
+            later.
           </Text>
 
           <Pressable
@@ -170,8 +255,12 @@ export default function HomeScreen() {
               pressed && styles.pressed,
             ]}
             onPress={() => router.push('/record')}
+            accessibilityRole="button"
+            accessibilityLabel="Start a voice note"
           >
-            <Text style={styles.recordButtonText}>Start a voice note</Text>
+            <Text style={styles.recordButtonText}>
+              + Start a voice note
+            </Text>
           </Pressable>
 
           <Text style={styles.recordHint}>
@@ -186,88 +275,214 @@ export default function HomeScreen() {
               All your thoughts in one place
             </Text>
           </View>
+
           <Text style={styles.noteCount}>
             {notes.length} {notes.length === 1 ? 'note' : 'notes'}
           </Text>
         </View>
 
+        {!loading && notes.length > 0 && (
+          <View style={styles.searchContainer}>
+            <Text style={styles.searchIcon}>⌕</Text>
+
+            <TextInput
+              style={styles.searchInput}
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              placeholder="Search your notes by title..."
+              placeholderTextColor="#899487"
+              returnKeyType="search"
+              accessibilityLabel="Search voice notes by title"
+            />
+
+            {searchQuery.length > 0 && (
+              <Pressable
+                onPress={() => setSearchQuery('')}
+                style={styles.clearSearchButton}
+                accessibilityRole="button"
+                accessibilityLabel="Clear search"
+              >
+                <Text style={styles.clearSearchText}>×</Text>
+              </Pressable>
+            )}
+          </View>
+        )}
+
+        {!loading && notes.length > 0 && (
+          <View style={styles.filterRow}>
+            {filterOptions.map((option) => {
+              const selected = noteFilter === option.value;
+
+              return (
+                <Pressable
+                  key={option.value}
+                  onPress={() => setNoteFilter(option.value)}
+                  style={[
+                    styles.filterButton,
+                    selected && styles.filterButtonActive,
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected }}
+                >
+                  <Text
+                    style={[
+                      styles.filterText,
+                      selected && styles.filterTextActive,
+                    ]}
+                  >
+                    {option.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        )}
+
         {loading ? (
           <View style={styles.emptyState}>
-            <ActivityIndicator size="small" color="#536A57" />
-            <Text style={styles.emptyDescription}>Loading your notes...</Text>
+            <ActivityIndicator size="small" color="#39834A" />
+            <Text style={styles.emptyDescription}>
+              Loading your notes...
+            </Text>
           </View>
         ) : notes.length === 0 ? (
           <View style={styles.emptyState}>
             <View style={styles.emptyIconContainer}>
               <Text style={styles.emptyIcon}>+</Text>
             </View>
+
             <Text style={styles.emptyTitle}>A fresh page</Text>
+
             <Text style={styles.emptyDescription}>
-              Your saved voice notes will appear here. Start with an idea
-              that's on your mind.
+              Your saved voice notes will appear here. Start with an
+              idea that&apos;s on your mind.
             </Text>
+
+            <Pressable
+              style={({ pressed }) => [
+                styles.emptyRecordButton,
+                pressed && styles.pressed,
+              ]}
+              onPress={() => router.push('/record')}
+            >
+              <Text style={styles.emptyRecordButtonText}>
+                Record your first note
+              </Text>
+            </Pressable>
+          </View>
+        ) : filteredNotes.length === 0 ? (
+          <View style={styles.emptyState}>
+            <View style={styles.emptyIconContainer}>
+              <Text style={styles.emptyIcon}>⌕</Text>
+            </View>
+
+            <Text style={styles.emptyTitle}>
+              No matching notes
+            </Text>
+
+            <Text style={styles.emptyDescription}>
+              {searchQuery.trim()
+                ? 'Try another title or clear your search.'
+                : 'There are no notes in this category yet.'}
+            </Text>
+
+            <Pressable
+              style={styles.resetButton}
+              onPress={() => {
+                setSearchQuery('');
+                setNoteFilter('all');
+              }}
+            >
+              <Text style={styles.resetButtonText}>
+                Show all notes
+              </Text>
+            </Pressable>
           </View>
         ) : (
-          notes.map((note) => {
-            const isThisPlaying =
-              playingUri === note.audioUri && playerStatus.playing;
+          <>
+            <Text style={styles.resultsText}>
+              Showing {filteredNotes.length}{' '}
+              {filteredNotes.length === 1 ? 'note' : 'notes'}
+            </Text>
 
-            return (
-              <View key={note.id} style={styles.noteCard}>
-                <View style={styles.noteHeading}>
-                  <View style={styles.noteIcon}>
-                    <Text style={styles.noteIconText}>Audio</Text>
+            {filteredNotes.map((note) => {
+              const isThisPlaying =
+                playingUri === note.audioUri && playerStatus.playing;
+
+              return (
+                <View key={note.id} style={styles.noteCard}>
+                  <View style={styles.noteHeading}>
+                    <View style={styles.noteIcon}>
+                      <Text style={styles.noteIconText}>AUDIO</Text>
+                    </View>
+
+                    <View style={styles.noteInfo}>
+                      <Text style={styles.noteTitle}>
+                        {note.title}
+                      </Text>
+
+                      <Text style={styles.noteDate}>
+                        {formatDate(note.createdAt)}
+                      </Text>
+                    </View>
                   </View>
-                  <View style={styles.noteInfo}>
-                    <Text style={styles.noteTitle}>{note.title}</Text>
-                    <Text style={styles.noteDate}>
-                      {formatDate(note.createdAt)}
+
+                  <View style={styles.noteFooter}>
+                    <Text style={styles.notePreview}>
+                      Voice recording saved locally
+                    </Text>
+
+                    <Text style={styles.duration}>
+                      {formatDuration(note.durationMillis)}
                     </Text>
                   </View>
-                </View>
 
-                <View style={styles.noteFooter}>
-                  <Text style={styles.notePreview}>
-                    Voice recording saved locally
-                  </Text>
-                  <Text style={styles.duration}>
-                    {formatDuration(note.durationMillis)}
-                  </Text>
-                </View>
+                  <View style={styles.actionRow}>
+                    <Pressable
+                      style={({ pressed }) => [
+                        styles.playButton,
+                        pressed && styles.pressed,
+                      ]}
+                      onPress={() => void playNote(note)}
+                      disabled={deletingId === note.id}
+                      accessibilityRole="button"
+                      accessibilityLabel={
+                        isThisPlaying
+                          ? `Pause ${note.title}`
+                          : `Play ${note.title}`
+                      }
+                    >
+                      <Text style={styles.playButtonText}>
+                        {isThisPlaying ? 'Ⅱ Pause' : '▶ Play'}
+                      </Text>
+                    </Pressable>
 
-                <View style={styles.actionRow}>
-                  <Pressable
-                    style={({ pressed }) => [
-                      styles.playButton,
-                      pressed && styles.pressed,
-                    ]}
-                    onPress={() => void playNote(note)}
-                    disabled={deletingId === note.id}
-                  >
-                    <Text style={styles.playButtonText}>
-                      {isThisPlaying ? 'Ⅱ Pause' : '▶ Play'}
-                    </Text>
-                  </Pressable>
-
-                  <Pressable
-                    style={({ pressed }) => [
-                      styles.deleteButton,
-                      pressed && styles.pressed,
-                    ]}
-                    onPress={() => confirmDelete(note)}
-                    disabled={deletingId === note.id}
-                  >
-                    <Text style={styles.deleteButtonText}>
-                      {deletingId === note.id ? 'Deleting…' : 'Delete'}
-                    </Text>
-                  </Pressable>
+                    <Pressable
+                      style={({ pressed }) => [
+                        styles.deleteButton,
+                        pressed && styles.pressed,
+                      ]}
+                      onPress={() => confirmDelete(note)}
+                      disabled={deletingId === note.id}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Delete ${note.title}`}
+                    >
+                      <Text style={styles.deleteButtonText}>
+                        {deletingId === note.id
+                          ? 'Deleting…'
+                          : 'Delete'}
+                      </Text>
+                    </Pressable>
+                  </View>
                 </View>
-              </View>
-            );
-          })
+              );
+            })}
+          </>
         )}
 
-        <Text style={styles.footer}>Made for thoughts on the go.</Text>
+        <Text style={styles.footer}>
+          Made for thoughts on the go.
+        </Text>
       </ScrollView>
     </SafeAreaView>
   );
@@ -276,7 +491,7 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#F8F7F2',
+    backgroundColor: '#F5F9F0',
   },
   content: {
     paddingHorizontal: 24,
@@ -290,38 +505,38 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 38,
+    marginBottom: 32,
   },
   logo: {
-    fontSize: 26,
+    fontSize: 27,
     fontWeight: '800',
     letterSpacing: -0.8,
-    color: '#243B32',
+    color: '#24512E',
   },
   subtitle: {
     fontSize: 13,
-    color: '#7B8178',
+    color: '#71806F',
     marginTop: 5,
   },
   settingsButton: {
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
     borderRadius: 22,
-    backgroundColor: '#E9EDE4',
+    backgroundColor: '#E1F4D1',
   },
   settingsIcon: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#344A3D',
+    color: '#285C35',
   },
   hero: {
-    backgroundColor: '#E6EBDD',
+    backgroundColor: '#DFF5C8',
     borderRadius: 28,
     padding: 25,
-    marginBottom: 36,
+    marginBottom: 34,
   },
   eyebrow: {
-    color: '#64785D',
+    color: '#3C7A39',
     fontSize: 11,
     fontWeight: '800',
     letterSpacing: 2,
@@ -331,25 +546,25 @@ const styles = StyleSheet.create({
     fontSize: 38,
     lineHeight: 44,
     fontWeight: '800',
-    color: '#263D31',
+    color: '#21452B',
     letterSpacing: -1.2,
   },
   heroDescription: {
     fontSize: 15,
     lineHeight: 23,
-    color: '#536354',
+    color: '#49644B',
     marginTop: 14,
     marginBottom: 24,
   },
   recordButton: {
     minHeight: 58,
     borderRadius: 17,
-    backgroundColor: '#365846',
+    backgroundColor: '#347A3E',
     alignItems: 'center',
     justifyContent: 'center',
   },
   pressed: {
-    opacity: 0.8,
+    opacity: 0.78,
   },
   recordButtonText: {
     color: '#FFFFFF',
@@ -359,7 +574,7 @@ const styles = StyleSheet.create({
   recordHint: {
     textAlign: 'center',
     fontSize: 12,
-    color: '#71816D',
+    color: '#5C7955',
     marginTop: 14,
   },
   sectionHeader: {
@@ -371,25 +586,88 @@ const styles = StyleSheet.create({
   sectionTitle: {
     fontSize: 23,
     fontWeight: '800',
-    color: '#263D31',
+    color: '#25482D',
   },
   sectionSubtitle: {
-    color: '#858980',
+    color: '#788575',
     fontSize: 13,
     marginTop: 5,
   },
   noteCount: {
     fontSize: 12,
-    color: '#536A57',
-    backgroundColor: '#E9EDE4',
+    fontWeight: '700',
+    color: '#2F7139',
+    backgroundColor: '#E1F4D1',
     paddingHorizontal: 12,
-    paddingVertical: 7,
+    paddingVertical: 8,
     borderRadius: 20,
+  },
+  searchContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 52,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#DCE8D5',
+    borderRadius: 15,
+    paddingHorizontal: 14,
+    marginBottom: 14,
+  },
+  searchIcon: {
+    fontSize: 25,
+    color: '#56805A',
+    marginRight: 9,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 14,
+    color: '#25482D',
+    paddingVertical: 12,
+  },
+  clearSearchButton: {
+    width: 30,
+    height: 30,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  clearSearchText: {
+    fontSize: 25,
+    color: '#71806F',
+  },
+  filterRow: {
+    flexDirection: 'row',
+    gap: 9,
+    marginBottom: 18,
+  },
+  filterButton: {
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    borderRadius: 22,
+    backgroundColor: '#EAF0E4',
+    borderWidth: 1,
+    borderColor: '#E0E8D9',
+  },
+  filterButtonActive: {
+    backgroundColor: '#347A3E',
+    borderColor: '#347A3E',
+  },
+  filterText: {
+    color: '#4F6850',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  filterTextActive: {
+    color: '#FFFFFF',
+  },
+  resultsText: {
+    fontSize: 12,
+    color: '#788575',
+    marginBottom: 12,
   },
   emptyState: {
     backgroundColor: '#FFFFFF',
     borderWidth: 1,
-    borderColor: '#EDEDE5',
+    borderColor: '#E3ECDD',
     borderRadius: 22,
     alignItems: 'center',
     paddingHorizontal: 24,
@@ -399,32 +677,56 @@ const styles = StyleSheet.create({
     width: 58,
     height: 58,
     borderRadius: 29,
-    backgroundColor: '#F1F3EB',
+    backgroundColor: '#EAF7DF',
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 14,
   },
   emptyIcon: {
     fontSize: 30,
-    color: '#536A57',
+    color: '#347A3E',
   },
   emptyTitle: {
     fontSize: 18,
     fontWeight: '700',
-    color: '#34483A',
+    color: '#285C35',
   },
   emptyDescription: {
     textAlign: 'center',
     fontSize: 13,
     lineHeight: 21,
-    color: '#858980',
+    color: '#788575',
     marginTop: 9,
     maxWidth: 300,
+  },
+  emptyRecordButton: {
+    backgroundColor: '#347A3E',
+    borderRadius: 12,
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    marginTop: 20,
+  },
+  emptyRecordButtonText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  resetButton: {
+    marginTop: 18,
+    backgroundColor: '#E1F4D1',
+    borderRadius: 12,
+    paddingHorizontal: 18,
+    paddingVertical: 11,
+  },
+  resetButtonText: {
+    color: '#285C35',
+    fontSize: 13,
+    fontWeight: '700',
   },
   noteCard: {
     backgroundColor: '#FFFFFF',
     borderWidth: 1,
-    borderColor: '#EDEDE5',
+    borderColor: '#E3ECDD',
     borderRadius: 18,
     padding: 18,
     marginBottom: 12,
@@ -435,15 +737,16 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   noteIcon: {
-    backgroundColor: '#E9EDE4',
+    backgroundColor: '#E1F4D1',
     paddingHorizontal: 10,
     paddingVertical: 12,
     borderRadius: 12,
   },
   noteIconText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#536A57',
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#347A3E',
+    letterSpacing: 0.5,
   },
   noteInfo: {
     flex: 1,
@@ -451,11 +754,11 @@ const styles = StyleSheet.create({
   noteTitle: {
     fontSize: 16,
     fontWeight: '700',
-    color: '#263D31',
+    color: '#25482D',
   },
   noteDate: {
     fontSize: 12,
-    color: '#858980',
+    color: '#788575',
     marginTop: 5,
   },
   noteFooter: {
@@ -467,12 +770,12 @@ const styles = StyleSheet.create({
   },
   notePreview: {
     fontSize: 12,
-    color: '#626B60',
+    color: '#667462',
     flex: 1,
   },
   duration: {
     fontSize: 12,
-    color: '#536A57',
+    color: '#347A3E',
     fontWeight: '700',
   },
   actionRow: {
@@ -486,7 +789,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingVertical: 13,
     borderRadius: 12,
-    backgroundColor: '#365846',
+    backgroundColor: '#347A3E',
   },
   playButtonText: {
     color: '#FFFFFF',
@@ -499,9 +802,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingVertical: 13,
     borderRadius: 12,
-    backgroundColor: '#F8EAE7',
+    backgroundColor: '#FFF0ED',
     borderWidth: 1,
-    borderColor: '#F0D5D0',
+    borderColor: '#F1D6D0',
   },
   deleteButtonText: {
     color: '#9B4035',
@@ -510,7 +813,7 @@ const styles = StyleSheet.create({
   },
   footer: {
     textAlign: 'center',
-    color: '#92968C',
+    color: '#899487',
     fontSize: 12,
     marginTop: 28,
   },
