@@ -1,4 +1,4 @@
-﻿import { View, Text, Pressable, StyleSheet } from 'react-native';
+import { View, Text, Pressable, StyleSheet } from 'react-native';
 import { useRouter } from 'expo-router';
 
 export default function SettingsScreen() {

@@ -1,4 +1,5 @@
-﻿import * as SQLite from 'expo-sqlite';
+
+import * as SQLite from 'expo-sqlite';
 
 export type VoiceNote = {
   id: number;
@@ -6,6 +7,7 @@ export type VoiceNote = {
   audioUri: string;
   durationMillis: number;
   createdAt: string;
+  transcript: string | null;
 };
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
@@ -29,6 +31,17 @@ async function getDatabase(): Promise<SQLite.SQLiteDatabase> {
     );
   `);
 
+  // Safely migrate databases created by older versions of MindScribe.
+  const columns = await db.getAllAsync<{ name: string }>(
+    'PRAGMA table_info(voice_notes);'
+  );
+
+  if (!columns.some((column) => column.name === 'transcript')) {
+    await db.execAsync(
+      'ALTER TABLE voice_notes ADD COLUMN transcript TEXT;'
+    );
+  }
+
   return db;
 }
 
@@ -41,7 +54,8 @@ export async function getVoiceNotes(): Promise<VoiceNote[]> {
       title,
       audio_uri AS audioUri,
       duration_millis AS durationMillis,
-      created_at AS createdAt
+      created_at AS createdAt,
+      transcript
     FROM voice_notes
     ORDER BY id DESC;
   `);
@@ -67,7 +81,24 @@ export async function saveVoiceNote(
   return result.lastInsertRowId;
 }
 
+export async function updateVoiceNoteTranscript(
+  id: number,
+  transcript: string
+): Promise<void> {
+  const db = await getDatabase();
+
+  await db.runAsync(
+    'UPDATE voice_notes SET transcript = ? WHERE id = ?;',
+    transcript,
+    id
+  );
+}
+
 export async function deleteVoiceNote(id: number): Promise<void> {
   const db = await getDatabase();
-  await db.runAsync('DELETE FROM voice_notes WHERE id = ?;', id);
+
+  await db.runAsync(
+    'DELETE FROM voice_notes WHERE id = ?;',
+    id
+  );
 }

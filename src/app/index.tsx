@@ -21,8 +21,11 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   deleteVoiceNote,
   getVoiceNotes,
+  updateVoiceNoteTranscript,
   type VoiceNote,
 } from '../db/database';
+
+import { transcribeAudio } from '../services/transcription';
 
 type NoteFilter = 'all' | 'recent' | 'older';
 
@@ -39,6 +42,7 @@ export default function HomeScreen() {
   const [noteFilter, setNoteFilter] = useState<NoteFilter>('all');
   const [playingUri, setPlayingUri] = useState<string | null>(null);
   const [currentTime, setCurrentTime] = useState(0);
+  const [transcribingId, setTranscribingId] = useState<number | null>(null);
 
   const player = useAudioPlayer(null);
   const playerStatus = useAudioPlayerStatus(player);
@@ -101,6 +105,34 @@ export default function HomeScreen() {
     });
   }, [notes, searchQuery, noteFilter, currentTime]);
 
+  const handleTranscribe = async (note: VoiceNote) => {
+    try {
+      setTranscribingId(note.id);
+
+      const transcript = await transcribeAudio(note.audioUri);
+
+      await updateVoiceNoteTranscript(note.id, transcript);
+
+      setNotes((currentNotes) =>
+        currentNotes.map((item) =>
+          item.id === note.id ? { ...item, transcript } : item,
+        ),
+      );
+
+      Alert.alert('Transcription complete', 'Your transcript has been saved.');
+    } catch (error) {
+      console.error('Transcription failed:', error);
+
+      Alert.alert(
+        'Transcription failed',
+        error instanceof Error
+          ? error.message
+          : 'Could not transcribe this recording. Please try again.',
+      );
+    } finally {
+      setTranscribingId(null);
+    }
+  };
   const playNote = async (note: VoiceNote) => {
     try {
       await setAudioModeAsync({
@@ -437,6 +469,31 @@ export default function HomeScreen() {
                     </Text>
                   </View>
 
+                  {note.transcript ? (
+                    <View style={styles.transcriptContainer}>
+                      <Text style={styles.transcriptTitle}>Transcript</Text>
+                      <Text style={styles.transcriptText}>{note.transcript}</Text>
+                    </View>
+                  ) : null}
+
+                  <Pressable
+                    style={({ pressed }) => [
+                      styles.transcribeButton,
+                      pressed && styles.pressed,
+                    ]}
+                    onPress={() => void handleTranscribe(note)}
+                    disabled={transcribingId !== null || deletingId === note.id}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Transcribe ${note.title}`}
+                  >
+                    <Text style={styles.transcribeButtonText}>
+                      {transcribingId === note.id
+                        ? 'Transcribing...'
+                        : note.transcript
+                          ? 'Transcribe again'
+                          : 'Transcribe recording'}
+                    </Text>
+                  </Pressable>
                   <View style={styles.actionRow}>
                     <Pressable
                       style={({ pressed }) => [
@@ -811,7 +868,38 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
   },
-  footer: {
+  transcriptContainer: {
+    marginTop: 16,
+    padding: 14,
+    borderRadius: 12,
+    backgroundColor: '#F3F8EE',
+    borderWidth: 1,
+    borderColor: '#DCE8D5',
+  },
+  transcriptTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#285C35',
+    marginBottom: 7,
+  },
+  transcriptText: {
+    fontSize: 14,
+    lineHeight: 21,
+    color: '#354936',
+  },
+  transcribeButton: {
+    marginTop: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: '#E1F4D1',
+  },
+  transcribeButtonText: {
+    color: '#285C35',
+    fontSize: 14,
+    fontWeight: '700',
+  },  footer: {
     textAlign: 'center',
     color: '#899487',
     fontSize: 12,
